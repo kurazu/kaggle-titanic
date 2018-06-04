@@ -59,13 +59,41 @@ def cleanup_nan(data_frame):
 
 
 EPOCHS = 1000
-BATCH_SIZE = 128
-LEARNING_RATE = 0.001
-PATIENCE = 20
-VALIDATION_SPLIT = 0.2
+PATIENCE = 30
 MODEL_FILE = 'weights.best.hdf5'
-LAYERS = [128, 32]
-CONTROL_VAR = 'binary_accuracy'
+MODEL_PATH = here_path(MODEL_FILE)
+
+# BATCH_SIZE = 128
+# LEARNING_RATE = 0.001
+# VALIDATION_SPLIT = 0.2
+# LAYERS = [128, 32]
+# CONTROL_VAR = 'binary_accuracy'
+
+ROUNDS = 10
+PARAMS = {
+    'batch_size': [16, 32, 64, 128, 256],
+    'learning_rate': [
+        0.00001, 0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01
+    ],
+    'validation_split': [0.2, 0.3, 0.4, 0.5],
+    'layers': [
+        (1024, 512, 128, 32),
+        (1024, 512, 128, 16),
+        (1024, 256, 64),
+        (1024, 256, 32),
+        (512, 128, 32),
+        (512, 64, 16),
+        (256, 64),
+        (128, 32),
+        (64, 16),
+        (128, ),
+        (64, ),
+        (32, )
+    ],
+    'control_var': [
+        'val_loss', 'val_accuracy', 'val_binary_accuracy'
+    ]
+}
 
 
 def get_model(input_shape, layers, learning_rate):
@@ -97,14 +125,12 @@ def get_callbacks(control_var):
         mode='auto'
     )
 
-    weights_path = here_path(MODEL_FILE)
-
     checkpointer = ModelCheckpoint(
-        weights_path, monitor=control_var,
+        MODEL_PATH, monitor=control_var,
         verbose=1, save_best_only=True, mode='max'
     )
 
-    return [stopping, checkpointer], weights_path
+    return [stopping, checkpointer]
 
 
 def train(
@@ -112,7 +138,7 @@ def train(
     batch_size, learning_rate, validation_split, layers, control_var
 ):
     model = get_model(train_X.shape, layers, learning_rate)
-    callbacks, weights_path = get_callbacks(control_var)
+    callbacks = get_callbacks(control_var)
 
     model.fit(
         train_X, train_y,
@@ -122,13 +148,43 @@ def train(
         callbacks=callbacks
     )
 
-    model.load_weights(weights_path)
+    model.load_weights(MODEL_PATH)
 
     scores = model.evaluate(train_X, train_y, verbose=1)
     scores_dict = {
         label: score for label, score in zip(model.metrics_names, scores)
     }
     return model, scores_dict['binary_accuracy']
+
+
+def find_best_model(train_X, train_y, rounds, params):
+    best_model = None
+    best_accuracy = 0.0
+    best_params = {
+        param: values[0] for param, values in params.items()
+    }
+
+    for round_idx in range(rounds):
+        for param, values in params.items():
+            print('Round', round_idx + 1, 'querying param', param)
+            for value in values:
+                candidate_params = dict(best_params)
+                candidate_params[param] = value
+                model, accuracy = train(
+                    train_X, train_y, **candidate_params
+                )
+                if accuracy > best_accuracy:
+                    print(
+                        'Round', round_idx + 1,
+                        'found better param', param, ':',
+                        best_params[param], '=>', value,
+                        '(', best_accuracy, '=>', accuracy, ')'
+                    )
+                    best_accuracy = accuracy
+                    best_model = model
+                    best_params = candidate_params
+
+    return best_model, best_accuracy, best_params
 
 
 def main():
@@ -156,14 +212,13 @@ def main():
     print('Train y', train_y.shape)
     print('Predict X', predict_X.shape)
 
-    model, accuracy = train(
-        train_X, train_y,
-        BATCH_SIZE, LEARNING_RATE, VALIDATION_SPLIT, LAYERS, CONTROL_VAR
-    )
+    model, accuracy, params = find_best_model(train_X, train_y, ROUNDS, PARAMS)
+    model.save_weights(MODEL_PATH)
 
-    print('Accuracy', accuracy)
+    print('Best accuracy', accuracy)
+    print('Best params', params)
 
-    predict_y = model.predict(predict_X, batch_size=BATCH_SIZE)
+    predict_y = model.predict(predict_X, batch_size=32)
 
     predictions = (predict_y.reshape((-1, )) >= 0.5).astype('int64')
 
