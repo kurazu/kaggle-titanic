@@ -12,7 +12,7 @@ from sklearn_pandas import DataFrameMapper
 from keras.models import Sequential
 from keras.layers import Dense, InputLayer, BatchNormalization, LeakyReLU
 from keras.optimizers import Adam
-from keras.callbacks import EarlyStopping
+from keras.callbacks import EarlyStopping, ModelCheckpoint
 
 
 def here_path(filename):
@@ -58,17 +58,23 @@ def cleanup_nan(data_frame):
     data_frame.Fare.fillna(data_frame.Fare.mean(), inplace=True)
 
 
+EPOCHS = 100
+BATCH_SIZE = 128
+LEARNING_RATE = 0.001
+PATIENCE = 10
+VALIDATION_SPLIT = 0.2
+MODEL_FILE = 'weights.best.hdf5'
+LAYERS = [128, 32]
+
+
 def get_model(input_shape):
     model = Sequential()
     model.add(InputLayer(input_shape=input_shape[1:]))
 
-    model.add(Dense(128))
-    model.add(BatchNormalization())
-    model.add(LeakyReLU())
-
-    model.add(Dense(32))
-    model.add(BatchNormalization())
-    model.add(LeakyReLU())
+    for units in LAYERS:
+        model.add(Dense(units))
+        model.add(BatchNormalization())
+        model.add(LeakyReLU())
 
     model.add(Dense(1, activation='sigmoid'))
 
@@ -79,11 +85,6 @@ def get_model(input_shape):
     )
 
     return model
-
-
-EPOCHS = 100
-BATCH_SIZE = 128
-LEARNING_RATE = 0.001
 
 
 def main():
@@ -107,28 +108,42 @@ def main():
     predict_X = mapper.transform(test_data_frame)
     ids = test_data_frame.PassengerId
 
-    train_features, valid_features, train_labels, valid_labels = \
-        train_test_split(train_X, train_y, test_size=0.2)
-
-    print('Train X', train_features.shape)
-    print('Train y', train_labels.shape)
-    print('Validation X', valid_features.shape)
-    print('Validation y', valid_labels.shape)
+    print('Train X', train_X.shape)
+    print('Train y', train_y.shape)
     print('Predict X', predict_X.shape)
 
     model = get_model(train_X.shape)
 
+    control_var = 'binary_accuracy'
+
     stopping = EarlyStopping(
-        monitor='val_loss', min_delta=0, patience=10, verbose=1, mode='auto'
+        monitor=control_var,
+        min_delta=0,
+        patience=PATIENCE,
+        verbose=1,
+        mode='auto'
+    )
+
+    weights_path = here_path(MODEL_FILE)
+
+    checkpointer = ModelCheckpoint(
+        weights_path, monitor=control_var,
+        verbose=1, save_best_only=True, mode='max'
     )
 
     model.fit(
-        train_features, train_labels,
+        train_X, train_y,
+        validation_split=VALIDATION_SPLIT,
         shuffle=True,
-        validation_data=(valid_features, valid_labels),
         epochs=EPOCHS, batch_size=BATCH_SIZE,
-        callbacks=[stopping]
+        callbacks=[checkpointer, stopping]
     )
+
+    model.load_weights(weights_path)
+
+    scores = model.evaluate(train_X, train_y, verbose=1)
+    for label, score in zip(model.metrics_names, scores):
+        print(label, '=', score)
 
     predict_y = model.predict(predict_X, batch_size=BATCH_SIZE)
 
