@@ -11,17 +11,17 @@ def kaggle_path(competition, filename):
     )
 
 
-# mapper = DataFrameMapper([
-#     (['age'], sklearn.preprocessing.StandardScaler()), # single transformation
-#     ('sex', sklearn.preprocessing.LabelBinarizer()), # single transformation
-#     ('native_country', [ # multiple transformations
-#         sklearn.preprocessing.FunctionTransformer(
-#             native_country_generalize, validate=False
-#         ),
-#         sklearn.preprocessing.LabelBinarizer()
-#     ]),
-#     ...
-# ])
+def get_mapper():
+    return DataFrameMapper([
+        ('Pclass', sklearn.preprocessing.LabelBinarizer()),
+        ('Sex', sklearn.preprocessing.LabelBinarizer()),
+        (['Age'], sklearn.preprocessing.StandardScaler()),
+        (['SibSp'], sklearn.preprocessing.StandardScaler()),
+        (['Parch'], sklearn.preprocessing.StandardScaler()),
+        (['Fare'], sklearn.preprocessing.StandardScaler()),
+        ('Embarked', sklearn.preprocessing.LabelBinarizer()),
+    ])
+
 
 def analyze(data_frame):
     print('*' * 80)
@@ -56,6 +56,17 @@ def main():
 
     analyze(train_data_frame)
     analyze(test_data_frame)
+
+    mapper = get_mapper()
+    mapper.fit(train_data_frame)
+
+    train_X = mapper.transform(train_data_frame)
+    train_y = train_data_frame.as_matrix(columns=['Survived'])
+    test_X = mapper.transform(test_data_frame)
+
+    print('Train X', train_X.shape)
+    print('Test X', test_X.shape)
+    print('Train y', train_y.shape)
 
     import pdb; pdb.set_trace()
 
