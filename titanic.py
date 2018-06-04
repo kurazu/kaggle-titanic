@@ -36,6 +36,14 @@ def analyze(data_frame):
         )
 
 
+def cleanup_nan(data_frame):
+    data_frame.Embarked.fillna(
+        data_frame.Embarked.value_counts().idxmax(), inplace=True
+    )
+    data_frame.Age.fillna(data_frame.Age.mean(), inplace=True)
+    data_frame.Fare.fillna(data_frame.Fare.mean(), inplace=True)
+
+
 def main():
     train_data_frame = pandas.read_csv(kaggle_path('titanic', 'train.csv'))
     test_data_frame = pandas.read_csv(kaggle_path('titanic', 'test.csv'))
@@ -43,6 +51,13 @@ def main():
     analyze(train_data_frame)
     analyze(test_data_frame)
 
+    cleanup_nan(train_data_frame)
+    cleanup_nan(test_data_frame)
+
+    analyze(train_data_frame)
+    analyze(test_data_frame)
+
+    import pdb; pdb.set_trace()
 
 if __name__ == '__main__':
     main()
