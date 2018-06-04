@@ -58,20 +58,21 @@ def cleanup_nan(data_frame):
     data_frame.Fare.fillna(data_frame.Fare.mean(), inplace=True)
 
 
-EPOCHS = 100
+EPOCHS = 1000
 BATCH_SIZE = 128
 LEARNING_RATE = 0.001
-PATIENCE = 10
+PATIENCE = 20
 VALIDATION_SPLIT = 0.2
 MODEL_FILE = 'weights.best.hdf5'
 LAYERS = [128, 32]
+CONTROL_VAR = 'binary_accuracy'
 
 
-def get_model(input_shape):
+def get_model(input_shape, layers, learning_rate):
     model = Sequential()
     model.add(InputLayer(input_shape=input_shape[1:]))
 
-    for units in LAYERS:
+    for units in layers:
         model.add(Dense(units))
         model.add(BatchNormalization())
         model.add(LeakyReLU())
@@ -80,11 +81,54 @@ def get_model(input_shape):
 
     model.compile(
         loss='binary_crossentropy',
-        optimizer=Adam(lr=LEARNING_RATE),
+        optimizer=Adam(lr=learning_rate),
         metrics=['binary_accuracy']
     )
 
     return model
+
+
+def get_callbacks(control_var):
+    stopping = EarlyStopping(
+        monitor=control_var,
+        min_delta=0,
+        patience=PATIENCE,
+        verbose=1,
+        mode='auto'
+    )
+
+    weights_path = here_path(MODEL_FILE)
+
+    checkpointer = ModelCheckpoint(
+        weights_path, monitor=control_var,
+        verbose=1, save_best_only=True, mode='max'
+    )
+
+    return [stopping, checkpointer], weights_path
+
+
+def train(
+    train_X, train_y,
+    batch_size, learning_rate, validation_split, layers, control_var
+):
+    model = get_model(train_X.shape, layers, learning_rate)
+    callbacks, weights_path = get_callbacks(control_var)
+
+    model.fit(
+        train_X, train_y,
+        validation_split=validation_split,
+        shuffle=True,
+        epochs=EPOCHS, batch_size=batch_size,
+        callbacks=callbacks
+    )
+
+    model.load_weights(weights_path)
+
+    scores = model.evaluate(train_X, train_y, verbose=1)
+    scores_dict = {
+        label: score for label, score in zip(model.metrics_names, scores)
+    }
+    return model, scores_dict['binary_accuracy']
 
 
 def main():
@@ -112,38 +156,12 @@ def main():
     print('Train y', train_y.shape)
     print('Predict X', predict_X.shape)
 
-    model = get_model(train_X.shape)
-
-    control_var = 'binary_accuracy'
-
-    stopping = EarlyStopping(
-        monitor=control_var,
-        min_delta=0,
-        patience=PATIENCE,
-        verbose=1,
-        mode='auto'
-    )
-
-    weights_path = here_path(MODEL_FILE)
-
-    checkpointer = ModelCheckpoint(
-        weights_path, monitor=control_var,
-        verbose=1, save_best_only=True, mode='max'
-    )
-
-    model.fit(
+    model, accuracy = train(
         train_X, train_y,
-        validation_split=VALIDATION_SPLIT,
-        shuffle=True,
-        epochs=EPOCHS, batch_size=BATCH_SIZE,
-        callbacks=[checkpointer, stopping]
+        BATCH_SIZE, LEARNING_RATE, VALIDATION_SPLIT, LAYERS, CONTROL_VAR
     )
 
-    model.load_weights(weights_path)
-
-    scores = model.evaluate(train_X, train_y, verbose=1)
-    for label, score in zip(model.metrics_names, scores):
-        print(label, '=', score)
+    print('Accuracy', accuracy)
 
     predict_y = model.predict(predict_X, batch_size=BATCH_SIZE)
 
