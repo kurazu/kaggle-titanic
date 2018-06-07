@@ -1,22 +1,26 @@
 import os.path
+import multiprocessing
+import random
+import uuid
 
 import numpy as np
 
 import pandas
 
 import sklearn.preprocessing
-from sklearn.model_selection import train_test_split
+# from sklearn.model_selection import train_test_split
 
 from sklearn_pandas import DataFrameMapper
 
+from keras import backend as K
 from keras.models import Sequential
 from keras.layers import Dense, InputLayer, BatchNormalization, LeakyReLU
 from keras.optimizers import Adam
 from keras.callbacks import EarlyStopping, ModelCheckpoint
 
 
-def here_path(filename):
-    return os.path.join(os.path.dirname(__file__), filename)
+def here_path(*components):
+    return os.path.join(os.path.dirname(__file__), *components)
 
 
 def kaggle_path(competition, filename):
@@ -62,6 +66,7 @@ EPOCHS = 1000
 PATIENCE = 30
 MODEL_FILE = 'weights.best.hdf5'
 MODEL_PATH = here_path(MODEL_FILE)
+VERBOSE = 0
 
 # BATCH_SIZE = 128
 # LEARNING_RATE = 0.001
@@ -91,7 +96,7 @@ PARAMS = {
         (32, )
     ],
     'control_var': [
-        'val_loss', 'val_accuracy', 'val_binary_accuracy'
+        'val_loss', 'val_binary_accuracy'
     ]
 }
 
@@ -116,18 +121,18 @@ def get_model(input_shape, layers, learning_rate):
     return model
 
 
-def get_callbacks(control_var):
+def get_callbacks(model_file, control_var):
     stopping = EarlyStopping(
         monitor=control_var,
         min_delta=0,
         patience=PATIENCE,
-        verbose=1,
+        verbose=VERBOSE,
         mode='auto'
     )
 
     checkpointer = ModelCheckpoint(
-        MODEL_PATH, monitor=control_var,
-        verbose=1, save_best_only=True, mode='max'
+        model_file, monitor=control_var,
+        verbose=VERBOSE, save_best_only=True, mode='max'
     )
 
     return [stopping, checkpointer]
@@ -137,54 +142,81 @@ def train(
     train_X, train_y,
     batch_size, learning_rate, validation_split, layers, control_var
 ):
+    model_path = here_path('weights', f'weights.best.{uuid.uuid4()}.hdf5')
     model = get_model(train_X.shape, layers, learning_rate)
-    callbacks = get_callbacks(control_var)
+    callbacks = get_callbacks(model_path, control_var)
 
     model.fit(
         train_X, train_y,
         validation_split=validation_split,
         shuffle=True,
         epochs=EPOCHS, batch_size=batch_size,
-        callbacks=callbacks
+        callbacks=callbacks,
+        verbose=VERBOSE
     )
 
-    model.load_weights(MODEL_PATH)
+    model.load_weights(model_path)
 
-    scores = model.evaluate(train_X, train_y, verbose=1)
+    scores = model.evaluate(train_X, train_y, verbose=VERBOSE)
     scores_dict = {
         label: score for label, score in zip(model.metrics_names, scores)
     }
     return model, scores_dict['binary_accuracy']
 
 
+def train_proxy(train_X, train_y, params):
+    model, accuracy = train(train_X, train_y, **params)
+    K.clear_session()
+    return accuracy
+
+
 def find_best_model(train_X, train_y, rounds, params):
-    best_model = None
     best_accuracy = 0.0
     best_params = {
-        param: values[0] for param, values in params.items()
+        param: random.choice(values) for param, values in params.items()
     }
-
+    print('Starting params', best_params)
     for round_idx in range(rounds):
-        for param, values in params.items():
+        random_order_params = list(params)
+        random.shuffle(random_order_params)
+        for param in random_order_params:
             print('Round', round_idx + 1, 'querying param', param)
-            for value in values:
-                candidate_params = dict(best_params)
-                candidate_params[param] = value
-                model, accuracy = train(
-                    train_X, train_y, **candidate_params
-                )
-                if accuracy > best_accuracy:
-                    print(
-                        'Round', round_idx + 1,
-                        'found better param', param, ':',
-                        best_params[param], '=>', value,
-                        '(', best_accuracy, '=>', accuracy, ')'
-                    )
-                    best_accuracy = accuracy
-                    best_model = model
-                    best_params = candidate_params
+            values = params[param]
+            candidate_params = (
+                (train_X, train_y, dict(best_params, **{param: value}))
+                for value in values
+            )
+            with multiprocessing.Pool(multiprocessing.cpu_count() + 1) as pool:
+                results = pool.starmap(train_proxy, candidate_params)
 
-    return best_model, best_accuracy, best_params
+            idx = np.argmax(results)
+            accuracy = results[idx]
+            value = values[idx]
+
+            current_best_param_value = best_params[param]
+            current_best_param_accuracy = results[
+                values.index(current_best_param_value)
+            ]
+
+            if (
+                accuracy > current_best_param_accuracy and
+                value != current_best_param_value
+            ):
+                print(
+                    'Round', round_idx + 1,
+                    'found better param', param, ':',
+                    best_params[param], '=>', value,
+                    '(', best_accuracy, '=>', accuracy, ')'
+                )
+                best_accuracy = accuracy
+                best_params[param] = value
+            else:
+                print(
+                    'Round', round_idx + 1,
+                    'no improvement found for', param
+                )
+
+    return best_accuracy, best_params
 
 
 def main():
@@ -212,11 +244,15 @@ def main():
     print('Train y', train_y.shape)
     print('Predict X', predict_X.shape)
 
-    model, accuracy, params = find_best_model(train_X, train_y, ROUNDS, PARAMS)
-    model.save_weights(MODEL_PATH)
+    best_accuracy, best_params = find_best_model(
+        train_X, train_y, ROUNDS, PARAMS
+    )
+    print('Best accuracy', best_accuracy)
+    print('Best params', best_params)
 
-    print('Best accuracy', accuracy)
-    print('Best params', params)
+    model, accuracy = train(train_X, train_y, **best_params)
+    print('Retrained model accuracy', accuracy)
+    model.save_weights(MODEL_PATH)
 
     predict_y = model.predict(predict_X, batch_size=32)
 
