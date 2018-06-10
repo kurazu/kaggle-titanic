@@ -80,17 +80,12 @@ def get_mapper():
     return DataFrameMapper([
         ('Pclass', sklearn.preprocessing.LabelBinarizer()),
         ('Sex', sklearn.preprocessing.LabelBinarizer()),
-        (['Age'], sklearn.preprocessing.StandardScaler()),
+        (['CleanAge'], sklearn.preprocessing.StandardScaler()),
         (['SibSp'], sklearn.preprocessing.StandardScaler()),
         (['Parch'], sklearn.preprocessing.StandardScaler()),
-        (['Fare'], sklearn.preprocessing.StandardScaler()),
+        (['CleanFare'], sklearn.preprocessing.StandardScaler()),
         ('Embarked', sklearn.preprocessing.LabelBinarizer()),
-        ('Name', [
-            sklearn.preprocessing.FunctionTransformer(
-                categorize_name, validate=False
-            ),
-            sklearn.preprocessing.LabelBinarizer()
-        ]),
+        ('Prefix', sklearn.preprocessing.LabelBinarizer()),
         ('Cabin', [
             sklearn.preprocessing.FunctionTransformer(
                 categorize_cabin, validate=False
@@ -129,7 +124,6 @@ NAME_PREFIXES = [
 ]
 
 
-@numpy_map
 def categorize_name(name):
     categories = [prefix for prefix in NAME_PREFIXES if prefix in name]
     assert len(categories) == 1, name
@@ -157,12 +151,34 @@ def analyze(data_frame):
         )
 
 
+def clean_attr(data_frame, attr, row):
+    default_value = row[attr]
+    if not pandas.isna(default_value):
+        return default_value
+    mean = data_frame[data_frame.Prefix == row.Prefix][attr].mean()
+    print('Fill', row.Name, attr, mean)
+    if pandas.isna(mean):
+        subset = data_frame[
+            data_frame.Pclass == row.Pclass
+        ]
+        mean = subset[subset.Sex == row.Sex][attr].mean()
+        print('Emergency fill', row.Name, attr, mean)
+    return mean
+
+
 def cleanup_nan(data_frame):
     data_frame.Embarked.fillna(
         data_frame.Embarked.value_counts().idxmax(), inplace=True
     )
-    data_frame.Age.fillna(data_frame.Age.mean(), inplace=True)
-    data_frame.Fare.fillna(data_frame.Fare.mean(), inplace=True)
+    data_frame['Prefix'] = data_frame.Name.map(categorize_name)
+    data_frame['CleanAge'] = data_frame.apply(
+        functools.partial(clean_attr, data_frame, 'Age'),
+        axis=1
+    )
+    data_frame['CleanFare'] = data_frame.apply(
+        functools.partial(clean_attr, data_frame, 'Fare'),
+        axis=1
+    )
 
 
 EPOCHS = 1000
@@ -320,20 +336,13 @@ def main():
     # best_accuracy, best_params = find_best_model(
     #     train_X, train_y, ROUNDS, PARAMS
     # )
-    best_accuracy, best_params = hyperparam_search(
-        train_X, train_y, PARAMS
-    )
-    print('Best accuracy', best_accuracy)
-    print('Best params', best_params)
+    # best_accuracy, best_params = hyperparam_search(
+    #     train_X, train_y, PARAMS
+    # )
+    # print('Best accuracy', best_accuracy)
+    # print('Best params', best_params)
 
-    # best_params = {
-    #     'batch_size': 128,
-    #     'learning_rate': 0.0001,
-    #     'validation_split': 0.2,
-    #     'layers': (512, 64, 16),
-    #     'control_var': 'val_binary_accuracy'
-    # }
-    # best_params = BEST_PARAMS
+    best_params = BEST_PARAMS
 
     model, accuracy = train(train_X, train_y, **best_params)
     print('Retrained model accuracy', accuracy)
