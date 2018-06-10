@@ -194,11 +194,11 @@ PARAMS = {
 INPUT_SHAPE = ()
 
 BEST_PARAMS = {
-    'validation_split': 0.3,
-    'learning_rate': 0.001,
-    'layers': (1024, 512, 128, 32),
+    'batch_size': 128,
     'dropout_rate': 0.25,
-    'batch_size': 128
+    'layers': (1024, 256, 32),
+    'learning_rate': 0.00025,
+    'validation_split': 0.2
 }
 
 
@@ -218,7 +218,7 @@ def get_model(layers=(512, 128, 32), learning_rate=0.0001, dropout_rate=0.0):
     model.compile(
         loss='binary_crossentropy',
         optimizer=Adam(lr=learning_rate),
-        metrics=['binary_accuracy']
+        metrics=['binary_accuracy', 'accuracy']
     )
 
     return model
@@ -277,12 +277,14 @@ def hyperparam_search(train_X, train_y, params):
     model = KerasClassifier(
         build_fn=get_model, epochs=EPOCHS, batch_size=128, verbose=VERBOSE
     )
-    # grid = GridSearchCV(estimator=model, param_grid=params, n_jobs=-1, verbose=1)
-    grid = RandomizedSearchCV(
-        scoring='accuracy',
-        estimator=model, param_distributions=params,
-        n_jobs=-1, verbose=2, n_iter=ROUNDS
+    grid = GridSearchCV(
+        estimator=model, param_grid=params, n_jobs=-1, verbose=2
     )
+    # grid = RandomizedSearchCV(
+    #     scoring='accuracy',
+    #     estimator=model, param_distributions=params,
+    #     n_jobs=-1, verbose=2, n_iter=ROUNDS
+    # )
     grid_result = grid.fit(train_X, train_y, callbacks=[get_callback()])
     return grid_result.best_score_, grid_result.best_params_
 
@@ -318,11 +320,11 @@ def main():
     # best_accuracy, best_params = find_best_model(
     #     train_X, train_y, ROUNDS, PARAMS
     # )
-    # best_accuracy, best_params = hyperparam_search(
-    #     train_X, train_y, PARAMS
-    # )
-    # print('Best accuracy', best_accuracy)
-    # print('Best params', best_params)
+    best_accuracy, best_params = hyperparam_search(
+        train_X, train_y, PARAMS
+    )
+    print('Best accuracy', best_accuracy)
+    print('Best params', best_params)
 
     # best_params = {
     #     'batch_size': 128,
@@ -331,7 +333,7 @@ def main():
     #     'layers': (512, 64, 16),
     #     'control_var': 'val_binary_accuracy'
     # }
-    best_params = BEST_PARAMS
+    # best_params = BEST_PARAMS
 
     model, accuracy = train(train_X, train_y, **best_params)
     print('Retrained model accuracy', accuracy)
