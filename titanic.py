@@ -85,7 +85,63 @@ def get_mapper():
         (['Parch'], sklearn.preprocessing.StandardScaler()),
         (['Fare'], sklearn.preprocessing.StandardScaler()),
         ('Embarked', sklearn.preprocessing.LabelBinarizer()),
+        ('Name', [
+            sklearn.preprocessing.FunctionTransformer(
+                categorize_name, validate=False
+            ),
+            sklearn.preprocessing.LabelBinarizer()
+        ]),
+        ('Cabin', [
+            sklearn.preprocessing.FunctionTransformer(
+                categorize_cabin, validate=False
+            ),
+            sklearn.preprocessing.LabelBinarizer()
+        ])
     ])
+
+
+def numpy_map(callback):
+    @functools.wraps(callback)
+    def numpy_map_wrapper(X):
+        return np.array([callback(x) for x in X])
+    return numpy_map_wrapper
+
+
+NAME_PREFIXES = [
+    'Miss.',
+    'Mrs.',
+    'Mr.',
+    'Master.',
+    'Don.',
+    'Rev.',
+    'Dr.',
+    'Mme.',
+    'Ms.',
+    'Major.',
+    'Lady.',
+    'Sir.',
+    'Mlle.',
+    'Col.',
+    'Capt.',
+    'Countess.',
+    'Jonkheer.',
+    'Dona.',
+]
+
+
+@numpy_map
+def categorize_name(name):
+    categories = [prefix for prefix in NAME_PREFIXES if prefix in name]
+    assert len(categories) == 1, name
+    return categories[0]
+
+
+@numpy_map
+def categorize_cabin(cabin):
+    if isinstance(cabin, str):
+        return cabin[0]
+    else:
+        return 'U'
 
 
 def analyze(data_frame):
@@ -121,30 +177,29 @@ VERBOSE = 0
 # LAYERS = [128, 32]
 # CONTROL_VAR = 'binary_accuracy'
 
-ROUNDS = 100
+ROUNDS = 42
 PARAMS = {
-    'dropout_rate': [0.0, 0.25, 0.5],
-    'batch_size': [16, 32, 64, 128, 256],
+    'dropout_rate': [0.25],
+    'batch_size': [128],
     'learning_rate': [
-        0.00001, 0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01
+        0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005
     ],
     'validation_split': [0.2, 0.3],
     'layers': [
         (1024, 512, 128, 32),
-        (1024, 512, 128, 16),
-        (1024, 256, 64),
         (1024, 256, 32),
-        (512, 128, 32),
-        (512, 64, 16),
-        (256, 64),
         (128, 32),
-        (64, 16),
-        (128, ),
-        (64, ),
-        (32, )
     ]
 }
 INPUT_SHAPE = ()
+
+BEST_PARAMS = {
+    'validation_split': 0.3,
+    'learning_rate': 0.001,
+    'layers': (1024, 512, 128, 32),
+    'dropout_rate': 0.25,
+    'batch_size': 128
+}
 
 
 def get_model(layers=(512, 128, 32), learning_rate=0.0001, dropout_rate=0.0):
@@ -263,11 +318,11 @@ def main():
     # best_accuracy, best_params = find_best_model(
     #     train_X, train_y, ROUNDS, PARAMS
     # )
-    best_accuracy, best_params = hyperparam_search(
-        train_X, train_y, PARAMS
-    )
-    print('Best accuracy', best_accuracy)
-    print('Best params', best_params)
+    # best_accuracy, best_params = hyperparam_search(
+    #     train_X, train_y, PARAMS
+    # )
+    # print('Best accuracy', best_accuracy)
+    # print('Best params', best_params)
 
     # best_params = {
     #     'batch_size': 128,
@@ -276,6 +331,7 @@ def main():
     #     'layers': (512, 64, 16),
     #     'control_var': 'val_binary_accuracy'
     # }
+    best_params = BEST_PARAMS
 
     model, accuracy = train(train_X, train_y, **best_params)
     print('Retrained model accuracy', accuracy)
