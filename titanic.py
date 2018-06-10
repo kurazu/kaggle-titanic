@@ -1,7 +1,12 @@
+
+import io
+import os
 import os.path
 import multiprocessing
 import random
 import uuid
+import functools
+import pickle
 
 import numpy as np
 
@@ -9,14 +14,56 @@ import pandas
 
 import sklearn.preprocessing
 # from sklearn.model_selection import train_test_split
+from sklearn.model_selection import RandomizedSearchCV, GridSearchCV
+from sklearn.metrics import make_scorer
 
 from sklearn_pandas import DataFrameMapper
 
 from keras import backend as K
 from keras.models import Sequential
-from keras.layers import Dense, InputLayer, BatchNormalization, LeakyReLU
+from keras.layers import (
+    Dense, InputLayer, BatchNormalization, LeakyReLU, Dropout
+)
+from keras.metrics import binary_accuracy
 from keras.optimizers import Adam
-from keras.callbacks import EarlyStopping, ModelCheckpoint
+from keras.callbacks import EarlyStopping, ModelCheckpoint, Callback
+from keras.wrappers.scikit_learn import KerasClassifier
+
+
+class SessionCleanCallback(Callback):
+
+    def __init__(self):
+        super().__init__()
+        self.params = None
+        with io.open('out.log', 'w', encoding='utf-8') as f:
+            f.write(f'Main {os.getpid()}\n')
+            f.flush()
+        self.counter = 0
+
+    def write(self, text):
+        with io.open('out.log', 'a', encoding='utf-8') as f:
+            f.write(f'{os.getpid()}: ')
+            f.write(text)
+            f.write('\n')
+            f.flush()
+
+    def set_model(self, model):
+        self.write(f'set model {self.model == model}')
+        super().set_model(model)
+        # K.clear_session()
+
+    def set_params(self, params):
+        self.write(f'set params {self.params == params}')
+        super().set_params(params)
+
+    def on_train_begin(self, logs=None):
+        self.write('begin')
+
+    def on_train_end(self, logs=None):
+        self.counter += 1
+        self.write(f'end {self.counter}')
+        if self.counter % 3 == 0:
+            K.clear_session()
 
 
 def here_path(*components):
@@ -74,13 +121,14 @@ VERBOSE = 0
 # LAYERS = [128, 32]
 # CONTROL_VAR = 'binary_accuracy'
 
-ROUNDS = 10
+ROUNDS = 100
 PARAMS = {
+    'dropout_rate': [0.0, 0.25, 0.5],
     'batch_size': [16, 32, 64, 128, 256],
     'learning_rate': [
         0.00001, 0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01
     ],
-    'validation_split': [0.2, 0.3, 0.4, 0.5],
+    'validation_split': [0.2, 0.3],
     'layers': [
         (1024, 512, 128, 32),
         (1024, 512, 128, 16),
@@ -94,21 +142,21 @@ PARAMS = {
         (128, ),
         (64, ),
         (32, )
-    ],
-    'control_var': [
-        'val_loss', 'val_binary_accuracy'
     ]
 }
+INPUT_SHAPE = ()
 
 
-def get_model(input_shape, layers, learning_rate):
+def get_model(layers=(512, 128, 32), learning_rate=0.0001, dropout_rate=0.0):
+    K.clear_session()
     model = Sequential()
-    model.add(InputLayer(input_shape=input_shape[1:]))
+    model.add(InputLayer(input_shape=INPUT_SHAPE))
 
     for units in layers:
         model.add(Dense(units))
         model.add(BatchNormalization())
         model.add(LeakyReLU())
+        model.add(Dropout(dropout_rate))
 
     model.add(Dense(1, activation='sigmoid'))
 
@@ -121,32 +169,34 @@ def get_model(input_shape, layers, learning_rate):
     return model
 
 
-def get_callbacks(model_file, control_var):
+def get_callback():
     stopping = EarlyStopping(
-        monitor=control_var,
+        monitor='val_binary_accuracy',
         min_delta=0,
         patience=PATIENCE,
         verbose=VERBOSE,
-        mode='auto'
+        mode='max'
     )
+    return stopping
 
+
+def get_callbacks():
     checkpointer = ModelCheckpoint(
-        model_file, monitor=control_var,
+        MODEL_FILE, monitor='val_binary_accuracy',
         verbose=VERBOSE, save_best_only=True, mode='max'
     )
 
-    return [stopping, checkpointer]
+    return [checkpointer, get_callback()]
 
 
 def train(
     train_X, train_y,
-    batch_size, learning_rate, validation_split, layers, control_var
+    batch_size, learning_rate, validation_split, layers, dropout_rate
 ):
-    model_path = here_path('weights', f'weights.best.{uuid.uuid4()}.hdf5')
-    model = get_model(train_X.shape, layers, learning_rate)
-    callbacks = get_callbacks(model_path, control_var)
+    model = get_model(layers, learning_rate, dropout_rate)
+    callbacks = get_callbacks()
 
-    model.fit(
+    history = model.fit(
         train_X, train_y,
         validation_split=validation_split,
         shuffle=True,
@@ -154,69 +204,32 @@ def train(
         callbacks=callbacks,
         verbose=VERBOSE
     )
+    # Load the best set of weights
+    model.load_weights(MODEL_FILE)
 
-    model.load_weights(model_path)
+    return model, np.max(history.history['val_binary_accuracy'])
 
+
+def evaluate(train_X, train_y, model):
     scores = model.evaluate(train_X, train_y, verbose=VERBOSE)
     scores_dict = {
         label: score for label, score in zip(model.metrics_names, scores)
     }
-    return model, scores_dict['binary_accuracy']
+    return scores_dict['binary_accuracy']
 
 
-def train_proxy(train_X, train_y, params):
-    model, accuracy = train(train_X, train_y, **params)
-    K.clear_session()
-    return accuracy
-
-
-def find_best_model(train_X, train_y, rounds, params):
-    best_accuracy = 0.0
-    best_params = {
-        param: random.choice(values) for param, values in params.items()
-    }
-    print('Starting params', best_params)
-    for round_idx in range(rounds):
-        random_order_params = list(params)
-        random.shuffle(random_order_params)
-        for param in random_order_params:
-            print('Round', round_idx + 1, 'querying param', param)
-            values = params[param]
-            candidate_params = (
-                (train_X, train_y, dict(best_params, **{param: value}))
-                for value in values
-            )
-            with multiprocessing.Pool(multiprocessing.cpu_count() + 1) as pool:
-                results = pool.starmap(train_proxy, candidate_params)
-
-            idx = np.argmax(results)
-            accuracy = results[idx]
-            value = values[idx]
-
-            current_best_param_value = best_params[param]
-            current_best_param_accuracy = results[
-                values.index(current_best_param_value)
-            ]
-
-            if (
-                accuracy > current_best_param_accuracy and
-                value != current_best_param_value
-            ):
-                print(
-                    'Round', round_idx + 1,
-                    'found better param', param, ':',
-                    best_params[param], '=>', value,
-                    '(', best_accuracy, '=>', accuracy, ')'
-                )
-                best_accuracy = accuracy
-                best_params[param] = value
-            else:
-                print(
-                    'Round', round_idx + 1,
-                    'no improvement found for', param
-                )
-
-    return best_accuracy, best_params
+def hyperparam_search(train_X, train_y, params):
+    model = KerasClassifier(
+        build_fn=get_model, epochs=EPOCHS, batch_size=128, verbose=VERBOSE
+    )
+    # grid = GridSearchCV(estimator=model, param_grid=params, n_jobs=-1, verbose=1)
+    grid = RandomizedSearchCV(
+        scoring='accuracy',
+        estimator=model, param_distributions=params,
+        n_jobs=-1, verbose=2, n_iter=ROUNDS
+    )
+    grid_result = grid.fit(train_X, train_y, callbacks=[get_callback()])
+    return grid_result.best_score_, grid_result.best_params_
 
 
 def main():
@@ -244,15 +257,31 @@ def main():
     print('Train y', train_y.shape)
     print('Predict X', predict_X.shape)
 
-    best_accuracy, best_params = find_best_model(
-        train_X, train_y, ROUNDS, PARAMS
+    global INPUT_SHAPE
+    _, *INPUT_SHAPE = train_X.shape
+
+    # best_accuracy, best_params = find_best_model(
+    #     train_X, train_y, ROUNDS, PARAMS
+    # )
+    best_accuracy, best_params = hyperparam_search(
+        train_X, train_y, PARAMS
     )
     print('Best accuracy', best_accuracy)
     print('Best params', best_params)
 
+    # best_params = {
+    #     'batch_size': 128,
+    #     'learning_rate': 0.0001,
+    #     'validation_split': 0.2,
+    #     'layers': (512, 64, 16),
+    #     'control_var': 'val_binary_accuracy'
+    # }
+
     model, accuracy = train(train_X, train_y, **best_params)
     print('Retrained model accuracy', accuracy)
-    model.save_weights(MODEL_PATH)
+
+    accuracy_on_whole_set = evaluate(train_X, train_y, model)
+    print('Retrained model accuracy on whole set', accuracy_on_whole_set)
 
     predict_y = model.predict(predict_X, batch_size=32)
 
